@@ -1,0 +1,39 @@
+[build-system]
+requires = ["setuptools>=68", "setuptools-scm>=8"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "diffabl-demo"
+version = "0.1.0"
+description = "Differentiable simplified atmospheric boundary layer model in JAX/Equinox"
+requires-python = ">=3.10"
+dependencies = [
+    "jax>=0.4.20",
+    "jaxlib>=0.4.20",
+    "equinox>=0.11.0",
+    "lineax>=0.0.5",
+    "optimistix>=0.0.6",
+    "scipy>=1.11",
+    "numpy>=1.24",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=7.4",
+    "pytest-xdist",
+]
+viz = [
+    "matplotlib>=3.7",
+    "netcdf4",
+    "xarray",
+]
+
+[project.scripts]
+diffabl-demo = "diffabl_demo.cli:main"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-q"
