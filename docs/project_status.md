@@ -36,7 +36,7 @@ The core ABL solver is **functional and test-backed**. All 57 tests pass (48 exi
 
 1. Only Deardorff (nn_amxl=0/1) and BL89/Modified BL89 (nn_amxl=2/3) mixing lengths; no "Modified Deardorff" variant
 2. No MESONH forcing integration for SCM experiments
-3. No visualization/plotting utilities yet
+3. Plotting utilities not yet integrated into CLI or tested
 4. Bulk formulae are simplified (constant-like Cd); COARE/ECMWF not implemented
 5. `run_abl` with `jax.lax.scan` not tested (only `run_abl_python` used)
 6. BL89 search O(n^2) via vmap; could be optimized with cumulative-sum decomposition
@@ -46,5 +46,5 @@ The core ABL solver is **functional and test-backed**. All 57 tests pass (48 exi
 1. Validate Andren94 and Cuxart05 results against published figures
 2. Add COARE 3.0 / ECMWF bulk algorithms
 3. Implement 2D domain support via `jax.vmap`
-4. Add plotting utilities for figure reproduction
-5. Optimize BL89 search with cumulative-sum decomposition for O(n) per level
+4. Optimize BL89 search with cumulative-sum decomposition for O(n) per level
+5. Add CLI flag and tests for plotting utilities
