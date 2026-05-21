@@ -1,5 +1,6 @@
 """ABL state and parameters."""
 
+import math
 import jax.numpy as jnp
 import equinox as eqx
 from typing import Literal
@@ -26,6 +27,21 @@ class ABLParams(eqx.Module):
     gamma_cor: float = 0.55
     ln_geos_winds: bool = False
     SemiImp_Cor: bool = False
+    vkarmn: float = 0.4
+    mxl_min: float = 0.0
+    rn_Lsfc: float = 0.0
+    rn_Esfc: float = 0.0
+
+    def __post_init__(self):
+        if self.mxl_min == 0.0:
+            object.__setattr__(self, 'mxl_min',
+                               self.avm_bak / self.Cm / math.sqrt(self.tke_min))
+        if self.rn_Lsfc == 0.0:
+            object.__setattr__(self, 'rn_Lsfc',
+                               self.vkarmn * math.sqrt(math.sqrt(self.Cm * self.Ceps)) / self.Cm)
+        if self.rn_Esfc == 0.0:
+            object.__setattr__(self, 'rn_Esfc',
+                               1.0 / math.sqrt(self.Cm * self.Ceps))
 
 
 def cbr_params(**overrides) -> ABLParams:

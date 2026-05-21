@@ -1,6 +1,6 @@
 """TKE turbulence closure for the ABL model.
 
-Implements the 1.5-order TKE closure from Lemarié et al. (2021):
+Implements the 1.5-order TKE closure from Lemarie et al. (2021):
   - TKE prognostic equation with Patankar positivity treatment
   - Four mixing-length options (Deardorff, Modified Deardorff, BL89, Modified BL89)
   - Stability function and eddy viscosity/diffusivity diagnostics
@@ -23,6 +23,15 @@ def _compute_shear(u: jnp.ndarray, v: jnp.ndarray,
     dz = grid.e3w[1:]
     S2 = (du / dz) ** 2 + (dv / dz) ** 2
     return jnp.concatenate([jnp.array([S2[0]]), S2])
+
+
+def _compute_shear_mag(u: jnp.ndarray, v: jnp.ndarray,
+                       grid: ABLGrid) -> jnp.ndarray:
+    du = jnp.diff(u)
+    dv = jnp.diff(v)
+    dz = grid.e3w[1:]
+    S_mag = jnp.sqrt((du / dz) ** 2 + (dv / dz) ** 2)
+    return jnp.concatenate([jnp.array([S_mag[0]]), S_mag])
 
 
 def _compute_N2(theta: jnp.ndarray, q: jnp.ndarray,
@@ -90,56 +99,110 @@ def _mixing_length_deardorff(tke: jnp.ndarray, N2: jnp.ndarray,
     return l_m, l_d
 
 
+def _bl89_search_up(tke: jnp.ndarray, N2_safe: jnp.ndarray,
+                    shear_mag: jnp.ndarray, e_sqrt: jnp.ndarray,
+                    ghw: jnp.ndarray, e3t: jnp.ndarray,
+                    n: int, Rod: float) -> jnp.ndarray:
+    def search_from_k(k):
+        z_k = ghw[k]
+        cf_init = -tke[k]
+        l_up_init = ghw[-1] - ghw[k]
+        found_init = jnp.bool_(False)
+
+        def scan_fn(carry, j):
+            cf_prev, l_up, found = carry
+            active = (j > k) & (j < n - 1)
+
+            buoy = 0.5 * e3t[j] * (
+                N2_safe[j] * (ghw[j] - z_k)
+                + N2_safe[j - 1] * (ghw[j - 1] - z_k))
+            shear_term = 0.5 * e3t[j] * Rod * (
+                e_sqrt[j] * shear_mag[j]
+                + e_sqrt[j - 1] * shear_mag[j - 1])
+            cf_curr = jnp.where(active, cf_prev + buoy + shear_term, cf_prev)
+
+            crossed = (cf_curr >= 0) & active & ~found
+            z1 = ghw[j - 1] - z_k
+            z2 = ghw[j] - z_k
+            l_interp = (z1 * cf_curr - z2 * cf_prev) / (cf_curr - cf_prev + 1e-30)
+            l_up_new = jnp.where(crossed, jnp.maximum(l_interp, 1e-10), l_up)
+            found_new = found | crossed
+
+            return (cf_curr, l_up_new, found_new), None
+
+        js = jnp.arange(1, n)
+        (_, l_up_final, _), _ = lax.scan(
+            scan_fn, (cf_init, l_up_init, found_init), js)
+        return l_up_final
+
+    return jax.vmap(search_from_k)(jnp.arange(n))
+
+
+def _bl89_search_down(tke: jnp.ndarray, N2_safe: jnp.ndarray,
+                      shear_mag: jnp.ndarray, e_sqrt: jnp.ndarray,
+                      ghw: jnp.ndarray, e3t: jnp.ndarray,
+                      n: int, Rod: float) -> jnp.ndarray:
+    def search_from_k(k):
+        z_k = ghw[k]
+        cf_init = -tke[k]
+        l_down_init = ghw[k] - ghw[1]
+        found_init = jnp.bool_(False)
+
+        def scan_fn(carry, j):
+            cf_prev, l_down, found = carry
+            active = (j < k) & (j >= 1)
+
+            buoy = 0.5 * e3t[j + 1] * (
+                N2_safe[j + 1] * (z_k - ghw[j + 1])
+                + N2_safe[j] * (z_k - ghw[j]))
+            shear_term = 0.5 * e3t[j + 1] * Rod * (
+                e_sqrt[j + 1] * shear_mag[j + 1]
+                + e_sqrt[j] * shear_mag[j])
+            cf_curr = jnp.where(active, cf_prev + buoy + shear_term, cf_prev)
+
+            crossed = (cf_curr >= 0) & active & ~found
+            z1 = z_k - ghw[j + 1]
+            z2 = z_k - ghw[j]
+            l_interp = (z1 * cf_prev - z2 * cf_curr) / (cf_prev - cf_curr + 1e-30)
+            l_down_new = jnp.where(crossed, jnp.maximum(l_interp, 1e-10), l_down)
+            found_new = found | crossed
+
+            return (cf_curr, l_down_new, found_new), None
+
+        js = jnp.arange(n - 2, 0, -1)
+        (_, l_down_final, _), _ = lax.scan(
+            scan_fn, (cf_init, l_down_init, found_init), js)
+        return l_down_final
+
+    return jax.vmap(search_from_k)(jnp.arange(n))
+
+
 def _mixing_length_bl89(tke: jnp.ndarray, theta_v: jnp.ndarray,
-                         ghw: jnp.ndarray, e3t: jnp.ndarray, e3w: jnp.ndarray,
-                         jpka: int, Rod: float = 0.0) -> tuple[jnp.ndarray, jnp.ndarray]:
-    beta = 9.81 / jnp.mean(theta_v)
+                        N2: jnp.ndarray, shear_mag: jnp.ndarray,
+                        ghw: jnp.ndarray, e3t: jnp.ndarray, e3w: jnp.ndarray,
+                        jpka: int, mxl_min: float, rn_Lsfc: float,
+                        Rod: float = 0.0) -> tuple[jnp.ndarray, jnp.ndarray]:
+    n = jpka
+    N2_safe = jnp.maximum(N2, 1e-10)
+    e_sqrt = jnp.sqrt(jnp.maximum(tke, 1e-10))
 
-    def search_up(k):
-        e_k = tke[k]
-        integral = 0.0
-        dz_acc = 0.0
-        for j in range(k, jpka - 1):
-            dtheta = theta_v[j + 1] - theta_v[j] if j + 1 < len(theta_v) else 0.0
-            dz = e3t[j + 1] if j + 1 < len(e3t) else 0.0
-            buoy = beta * dtheta
-            shear = Rod * jnp.sqrt(jnp.maximum(e_k, 0.0)) * 0.0
-            consumption = (buoy - shear)
-            integral_prev = integral
-            integral = integral + consumption * dz
-            dz_acc = dz_acc + dz
-            crossed = integral >= e_k
-            frac = jnp.where(crossed & (integral > integral_prev),
-                             (e_k - integral_prev) / (integral - integral_prev + 1e-30), 0.0)
-            l_up_k = jnp.where(crossed, dz_acc - dz + frac * dz, dz_acc)
-        return l_up_k
+    l_up = _bl89_search_up(tke, N2_safe, shear_mag, e_sqrt, ghw, e3t, n, Rod)
+    l_down = _bl89_search_down(tke, N2_safe, shear_mag, e_sqrt, ghw, e3t, n, Rod)
 
-    def search_down(k):
-        e_k = tke[k]
-        integral = 0.0
-        dz_acc = 0.0
-        for j in range(k, 0, -1):
-            dtheta = theta_v[j] - theta_v[j - 1] if j > 0 else 0.0
-            dz = e3t[j] if j < len(e3t) else 0.0
-            buoy = beta * dtheta
-            shear = Rod * jnp.sqrt(jnp.maximum(e_k, 0.0)) * 0.0
-            consumption = (buoy - shear)
-            integral_prev = integral
-            integral = integral + consumption * dz
-            dz_acc = dz_acc + dz
-            crossed = integral >= e_k
-            frac = jnp.where(crossed & (integral > integral_prev),
-                             (e_k - integral_prev) / (integral - integral_prev + 1e-30), 0.0)
-            l_down_k = jnp.where(crossed, dz_acc - dz + frac * dz, dz_acc)
-        return l_down_k
-
-    l_up = jax.vmap(search_up)(jnp.arange(jpka))
-    l_down = jax.vmap(search_down)(jnp.arange(jpka))
+    l_up = l_up.at[0].set(ghw[1] * rn_Lsfc)
+    l_down = l_down.at[0].set(ghw[1] * rn_Lsfc)
+    l_up = l_up.at[-1].set(mxl_min)
+    l_down = l_down.at[-1].set(mxl_min)
 
     l_up = jnp.maximum(l_up, 1e-10)
     l_down = jnp.maximum(l_down, 1e-10)
+
     l_m = 2.0 * jnp.sqrt(2.0) * (l_down ** (-2.0 / 3.0) + l_up ** (-2.0 / 3.0)) ** (-1.5)
     l_d = jnp.minimum(l_down, l_up)
+
+    l_m = jnp.maximum(l_m, mxl_min)
+    l_d = jnp.maximum(l_d, mxl_min)
+
     return l_m, l_d
 
 
@@ -159,7 +222,15 @@ def abl_zdf_tke(state, grid: ABLGrid, params: ABLParams,
     n = grid.jpka
     dt = params.dt
 
-    l_m, l_d = _mixing_length_deardorff(tke, N2, grid.ghw, grid.e3t, n)
+    if params.nn_amxl <= 1:
+        l_m, l_d = _mixing_length_deardorff(tke, N2, grid.ghw, grid.e3t, n)
+    else:
+        shear_mag = _compute_shear_mag(u, v, grid)
+        Rod = params.Rod if params.nn_amxl == 3 else 0.0
+        l_m, l_d = _mixing_length_bl89(
+            tke, theta_v, N2, shear_mag,
+            grid.ghw, grid.e3t, grid.e3w, n,
+            params.mxl_min, params.rn_Lsfc, Rod)
 
     e_sqrt = jnp.sqrt(jnp.maximum(tke, params.tke_min))
     Km_diag = jnp.maximum(params.Cm * l_m * e_sqrt, params.avm_bak)
