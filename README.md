@@ -17,6 +17,9 @@ diffabl-demo andren94 --steps 1670 --params cbr
 
 # Cuxart 2005 convective ABL (Fig. 5)
 diffabl-demo cuxart05 --steps 3240 --params cch
+
+# Alternative (without pip install):
+python -m diffabl_demo.cli andren94 --steps 1670 --params cbr
 ```
 
 ## Library API
@@ -25,11 +28,20 @@ diffabl-demo cuxart05 --steps 3240 --params cch
 from diffabl_demo.demos import andren94, cuxart05
 from diffabl_demo.state import cbr_params, cch_params
 
-# Run Andren 1994 with CBR parameters
+# Run Andren 1994 with CBR parameters (Deardorff mixing length, nn_amxl=1)
 state, grid = andren94(cbr_params(dt=60.0, f=1e-4), n_steps=1670)
 
 # Run Cuxart 2005 with CCH/MesoNH parameters
 state, grid = cuxart05(cch_params(dt=10.0, f=1.39e-4), n_steps=3240)
+
+# Use BL89 mixing length (nn_amxl=2) or Modified BL89 (nn_amxl=3)
+params = cbr_params(dt=60.0, f=1e-4, nn_amxl=2)  # BL89
+params = cbr_params(dt=60.0, f=1e-4, nn_amxl=3)  # Modified BL89 (shear-aware)
+
+# ABLParams provides derived parameters:
+#   mxl_min  — minimum mixing length (avm_bak / Cm / sqrt(tke_min))
+#   rn_Lsfc  — surface mixing length scale (von Kármán based)
+#   rn_Esfc  — surface TKE constant (1 / sqrt(Cm * Ceps))
 ```
 
 ## Algorithm
@@ -37,7 +49,7 @@ state, grid = cuxart05(cch_params(dt=10.0, f=1.39e-4), n_steps=3240)
 The solver implements a 1.5-order TKE (turbulent kinetic energy) closure on a 1D staggered vertical grid:
 
 1. **TKE equation** — implicit Euler-backward with Patankar positivity treatment
-2. **Mixing length** — Deardorff (1980) with upward/downward sweeps
+2. **Mixing length** — Deardorff (nn_amxl=0/1), BL89 (nn_amxl=2), and Modified BL89 (nn_amxl=3) with upward/downward integral searches
 3. **PBL height** — diagnosed from bulk Richardson number integral
 4. **Tracer diffusion** — implicit Euler-backward with Robin surface BCs
 5. **Coriolis** — forward-backward alternating scheme
@@ -65,7 +77,7 @@ grad_u0 = jax.grad(loss)(8.0)  # reverse-mode AD
 ## Testing
 
 ```bash
-pytest -q   # 48 tests covering all modules
+pytest -q   # 57 tests covering all modules
 ```
 
 ## Project Structure
@@ -73,7 +85,7 @@ pytest -q   # 48 tests covering all modules
 ```
 src/diffabl_demo/
   grid.py          Vertical grid (uniform, sinh-stretched)
-  state.py         ABLState, ABLParams (CBR and CCH parameter sets)
+  state.py         ABLState, ABLParams (CBR/CCH sets, derived params mxl_min/rn_Lsfc/rn_Esfc)
   diffusion.py     Implicit vertical diffusion via Thomas algorithm
   tke.py           TKE turbulence closure
   coriolis.py      Coriolis treatment (forward-backward, semi-implicit)
@@ -82,6 +94,7 @@ src/diffabl_demo/
   stepper.py       Single time-step driver
   solver.py        Multi-step integration loop
   demos.py         Andren94 and Cuxart05 demonstration cases
+  plotting.py      Visualization utilities
   cli.py           Command-line interface
 tests/
   test_grid.py, test_diffusion.py, test_tke.py, test_coriolis.py,
